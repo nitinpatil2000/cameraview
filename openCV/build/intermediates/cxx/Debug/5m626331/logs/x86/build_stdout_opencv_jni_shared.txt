@@ -1,0 +1,2 @@
+ninja: Entering directory `E:\Mobile development\CameraViewInOrboAi\openCV\.cxx\Debug\5m626331\x86'
+ninja: no work to do.
