@@ -17,6 +17,8 @@ import android.util.Log
 import android.view.Menu
 import android.view.MenuItem
 import android.widget.Toast
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.activity.viewModels
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
@@ -24,17 +26,23 @@ import com.courses.cameraviewinorboai.R
 import com.courses.cameraviewinorboai.databinding.ActivityPicturePreviewBinding
 import com.courses.cameraviewinorboai.np.other.Constants.REQUEST_CODE
 import com.courses.cameraviewinorboai.np.other.ShareUtils
+import com.courses.cameraviewinorboai.np.viewmodel.PictureViewModel
 import com.google.android.material.appbar.MaterialToolbar
 import com.otaliastudios.cameraview.PictureResult
+import dagger.hilt.android.AndroidEntryPoint
+import org.opencv.android.OpenCVLoader
 import java.io.File
 import java.io.FileOutputStream
 import java.io.IOException
 
+@AndroidEntryPoint
 class PicturePreviewActivity : AppCompatActivity() {
     private val binding by lazy {
         ActivityPicturePreviewBinding.inflate(layoutInflater)
     }
+    private val viewModel by viewModels<PictureViewModel>()
 
+    //todo for save the original bitmap
     private var originalBitmap: Bitmap? = null
 
     companion object {
@@ -45,129 +53,100 @@ class PicturePreviewActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         setContentView(binding.root)
 
+        //TODO Load OpenCV library
+        if (!OpenCVLoader.initDebug()) {
+            Log.e("OpenCV", "Initialization failed!")
+        } else {
+            Log.d("OpenCV", "Initialization succeeded!")
+        }
+
         val result = pictureResult ?: run {
             finish()
             return
         }
-        val toolbar: MaterialToolbar = findViewById(R.id.toolbar)
 
-        //todo set up the tooblar
+        //todo set up the toolbar
+        val toolbar: MaterialToolbar = findViewById(R.id.toolbar)
         setSupportActionBar(toolbar)
 
-        try {
-            result.toBitmap(1000, 1000) { bitmap ->
-                binding.previewImage.setImageBitmap(bitmap)
-                originalBitmap = bitmap
-            }
-        } catch (e: UnsupportedOperationException) {
-            binding.previewImage.setImageDrawable(ColorDrawable(Color.GREEN))
-            Toast.makeText(this, "Can't preview this format: " + result.format, Toast.LENGTH_LONG)
-                .show()
-        }
+        //Todo call this viewModel method
+        viewModel.setPictureResult(result)
+        viewModel.logPictureSize(result)
+        viewModel.setPictureResult(result)
 
-        if (result.isSnapshot) {
-            val options = BitmapFactory.Options()
-            options.inJustDecodeBounds = true
-            BitmapFactory.decodeByteArray(result.data, 0, result.data.size, options)
-            if (result.rotation % 180 != 0) {
-                Log.e("PicturePreview", "The picture full size is ${result.size.height}x${result.size.width}")
-            } else {
-                Log.e("PicturePreview", "The picture full size is ${result.size.width}x${result.size.height}")
-            }
-        }
+        observeViewModelVariables()
 
+        handledClickEvent()
 
-        binding.cropImage.setOnClickListener {
-            val croppedBitmap = binding.previewImage.getCroppedBitmap()
-            if (croppedBitmap != null) {
-                binding.previewImage.setOriginalBitmap(croppedBitmap)
-            } else {
-                Toast.makeText(this, "Please select an area to crop", Toast.LENGTH_SHORT).show()
-            }
-        }
-
-        binding.downloadImage.setOnClickListener {
-            if (ContextCompat.checkSelfPermission(
-                    this, Manifest.permission.WRITE_EXTERNAL_STORAGE) ==
-                PackageManager.PERMISSION_GRANTED) {
-                saveImage()
-            } else {
-                askSelfPermission()
-            }
-        }
     }
 
-    private fun askSelfPermission() {
-        ActivityCompat.requestPermissions(
-            this,
-            arrayOf(Manifest.permission.WRITE_EXTERNAL_STORAGE),
-            REQUEST_CODE
-        )
-    }
-
-    private fun saveImage() {
-        originalBitmap?.let { bitmap ->
-            val fileName = "IMG_${System.currentTimeMillis()}.jpg"
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                saveImageToExternalStorage(fileName, bitmap)
-            } else {
-                saveImageToGalleryLegacy(fileName, bitmap)
+    private fun observeViewModelVariables() {
+        viewModel.bitmap.observe(this) { bitmap ->
+            bitmap?.let {
+                binding.previewImage.setOriginalBitmap(it)
+                originalBitmap = it
+            } ?: run {
+                binding.previewImage.setImageDrawable(ColorDrawable(Color.GREEN))
             }
         }
-    }
 
-    private fun saveImageToExternalStorage(fileName: String, bitmap: Bitmap) {
-        val contentValues = ContentValues().apply {
-            put(MediaStore.MediaColumns.DISPLAY_NAME, fileName)
-            put(MediaStore.MediaColumns.MIME_TYPE, "image/jpeg")
-            put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_PICTURES)
+        viewModel.error.observe(this) { errorMessage ->
+            errorMessage?.let {
+                Toast.makeText(this, it, Toast.LENGTH_LONG).show()
+            }
         }
 
-        val uri: Uri? = contentResolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, contentValues)
-        uri?.let {
-            try {
-                val outputStream = contentResolver.openOutputStream(it)
-                outputStream?.use { stream ->
-                    bitmap.compress(Bitmap.CompressFormat.JPEG, 100, stream)
-                    Toast.makeText(this, "Successfully Saved", Toast.LENGTH_SHORT).show()
-                }
-            } catch (e: IOException) {
-                e.printStackTrace()
+        viewModel.imageSaved.observe(this) { isImageSaved ->
+            if (isImageSaved) {
+                Toast.makeText(this, "Image saved successfully", Toast.LENGTH_SHORT).show()
+            } else {
                 Toast.makeText(this, "Failed to save image", Toast.LENGTH_SHORT).show()
             }
         }
     }
 
-    private fun saveImageToGalleryLegacy(fileName: String, bitmap: Bitmap) {
-        val directory = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES).toString())
-        if (!directory.exists()) {
-            directory.mkdirs()
+    private fun handledClickEvent() {
+        binding.cropImage.setOnClickListener {
+            if(!binding.previewImage.hasCropped){
+                binding.previewImage.setIsCropEnabled(true)
+                Toast.makeText(this, "Crop the image", Toast.LENGTH_SHORT).show()
+            }else {
+                Toast.makeText(this, "Image has already been cropped", Toast.LENGTH_SHORT).show()
+            }
         }
-        val file = File(directory, fileName)
-        try {
-            val outputStream = FileOutputStream(file)
-            bitmap.compress(Bitmap.CompressFormat.JPEG, 100, outputStream)
-            outputStream.flush()
-            outputStream.close()
-            MediaScannerConnection.scanFile(this, arrayOf(file.toString()), null, null)
-            Toast.makeText(this, "Successfully Saved", Toast.LENGTH_SHORT).show()
-        } catch (e: IOException) {
-            e.printStackTrace()
-            Toast.makeText(this, "Failed to save image", Toast.LENGTH_SHORT).show()
+
+        binding.downloadImage.setOnClickListener {
+            checkPermissionAndSaveImage()
         }
     }
 
-    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
-        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
-        if (requestCode == REQUEST_CODE) {
-            if (grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
+
+    private fun checkPermissionAndSaveImage() {
+        if (ContextCompat.checkSelfPermission(
+                this, Manifest.permission.WRITE_EXTERNAL_STORAGE) ==
+            PackageManager.PERMISSION_GRANTED) {
+            saveImage()
+        } else {
+            requestPermissionLauncher.launch(Manifest.permission.WRITE_EXTERNAL_STORAGE)
+        }
+    }
+
+    private fun saveImage() {
+        originalBitmap?.let { bitmap ->
+            val fileName = "IMG_${System.currentTimeMillis()}.jpg"
+            viewModel.saveImage(fileName, bitmap)
+        }   
+    }
+
+    private val requestPermissionLauncher =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { isGranted ->
+            if (isGranted) {
                 saveImage()
-            } else {
+            }
+            else {
                 Toast.makeText(this, "Please provide the required permission !!", Toast.LENGTH_SHORT).show()
             }
         }
-    }
-
 
     override fun onDestroy() {
         super.onDestroy()
@@ -187,8 +166,18 @@ class PicturePreviewActivity : AppCompatActivity() {
                 pictureResult?.let { ShareUtils.sharePicture(this, it) }
                 true
             }
-
             else -> super.onOptionsItemSelected(item)
+        }
+    }
+
+    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == REQUEST_CODE) {
+            if (grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
+                saveImage()
+            } else {
+                Toast.makeText(this, "Please provide the required permission !!", Toast.LENGTH_SHORT).show()
+            }
         }
     }
 }
